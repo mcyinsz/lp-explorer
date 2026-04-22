@@ -43,3 +43,4 @@ class SolutionResult:
     variables: dict[str, Optional[float]]
     duals: dict[str, Optional[float]] = field(default_factory=dict)
     slacks: dict[str, float] = field(default_factory=dict)
+    reduced_costs: dict[str, Optional[float]] = field(default_factory=dict)

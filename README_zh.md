@@ -7,8 +7,9 @@
 - **YAML 定义问题** — 用简洁的配置文件描述变量、目标和约束
 - **灵活的约束语法** — 支持可读表达式（`x + y >= 10`）和结构化字典两种写法
 - **多种变量类型** — 连续变量、整数变量、0-1 变量
-- **灵敏度分析** — 输出约束松弛量（slack）和影子价格（dual）
-- **可视化** — 2 变量问题自动绘制可行域图；通用问题生成变量取值和约束利用率柱状图
+- **灵敏度分析** — 约束松弛量、影子价格（dual）、检验数（reduced cost）
+- **5 种可视化图表** — 可行域、变量取值、资源利用率、目标贡献占比、约束矩阵热力图
+- **4 种 YAML 报告** — 求解摘要、变量详情、约束详情、目标分解
 
 ## 快速开始
 
@@ -21,11 +22,26 @@ pip install -r requirements.txt
 ### 运行示例
 
 ```bash
-# 基础求解
+# 基础求解（仅文本输出）
 python solver.py examples/knapsack.yaml
 
-# 求解 + 可视化
+# 生成全部可视化
 python solver.py examples/production.yaml -v
+
+# 单独生成某种可视化
+python solver.py examples/factory.yaml --visual-value
+python solver.py examples/factory.yaml --visual-resource
+python solver.py examples/factory.yaml --visual-objective
+python solver.py examples/factory.yaml --visual-heatmap
+python solver.py examples/production.yaml --visual-region
+
+# YAML 数据报告
+python solver.py examples/factory.yaml --report-solution
+python solver.py examples/factory.yaml --report-variable --report-constraint
+python solver.py examples/factory.yaml --report-objective
+
+# 自由组合
+python solver.py examples/factory.yaml --visual-resource --visual-objective --report-solution
 ```
 
 ### Python API
@@ -179,11 +195,13 @@ class SolutionResult:
     variables: dict[str, Optional[float]]  # 各变量取值，如 {"x": 10.0, "y": 0.0}
     duals: dict[str, Optional[float]]      # 各约束的影子价格（对偶值）
     slacks: dict[str, float]               # 各约束的松弛量
+    reduced_costs: dict[str, Optional[float]]  # 各变量的检验数（reduced cost）
 ```
 
 - `slacks["demand"] = -0.0` 表示该约束刚好取等（binding constraint）
 - `duals["demand"] = 2.0` 表示需求约束放松 1 单位，目标值变化 2（影子价格）
-- 对于 ILP 问题，`duals` 来自 LP 松弛解，不是精确的对偶值
+- `reduced_costs["x"] = 0` 表示变量在最优基中；非零值表示变量在边界上
+- 对于 ILP 问题，`duals` 和 `reduced_costs` 来自 LP 松弛解，不是精确值
 
 ---
 
@@ -365,10 +383,13 @@ class ILPSolver:
             for name, constraint in prob.constraints.items():
                 duals[name] = constraint.pi            # 影子价格（对偶值）
                 slacks[name] = constraint.slack        # 松弛量
+
+        reduced_costs = {name: v.dj for name, v in self._vars.items()}
 ```
 
 - `constraint.pi` — 对偶变量值（影子价格），表示约束右端项增加 1 单位时目标值的变化量
 - `constraint.slack` — 松弛量，0 表示约束取等（binding），正值表示有余量
+- `v.dj` — 检验数（reduced cost），表示非基变量的目标系数需要改善多少才能入基
 
 ```python
         self.result = SolutionResult(
@@ -377,6 +398,7 @@ class ILPSolver:
             variables={name: v.varValue for name, v in self._vars.items()},
             duals=duals,
             slacks=slacks,
+            reduced_costs=reduced_costs,
         )
         return self.result
 ```
@@ -535,11 +557,12 @@ def _plot_summary(cfg, result, output_path):
 lp-explorer/
 ├── models.py          # 数据模型（VariableSpec, ConstraintSpec, SolutionResult 等）
 ├── solver.py          # ILPSolver 类：YAML 解析 → PuLP 建模 → CBC 求解 → 结果输出
-├── visualizer.py      # 可视化：2 变量画可行域，通用情况画摘要柱状图
+├── visualizer.py      # 5 种图表 + 向后兼容的自动检测
 ├── requirements.txt   # Python 依赖
 ├── examples/          # 示例问题定义
 │   ├── knapsack.yaml  # 0-1 背包问题（结构化约束写法）
-│   └── production.yaml # 生产计划问题（表达式约束写法）
+│   ├── production.yaml # 生产计划问题（表达式约束写法）
+│   └── factory.yaml   # 多产品工厂排产（4 变量、4 约束）
 └── tmp/               # 生成产物（已 gitignore）
 ```
 
@@ -553,10 +576,75 @@ lp-explorer/
 ## 命令行参数
 
 ```
-python solver.py <config.yaml> [-v, --visualize]
+python solver.py <config.yaml> [选项]
 ```
 
-| 参数            | 说明                       |
-|----------------|----------------------------|
-| `config`       | YAML 问题定义文件路径       |
-| `--visualize`  | 生成可视化图到 `tmp/` 目录   |
+### 可视化选项
+
+所有图表输出到 `tmp/` 目录。
+
+| 参数                  | 输出文件              | 说明                                   |
+|----------------------|----------------------|----------------------------------------|
+| `-v`, `--visualize`  | `*_result.png`       | 默认可视化（2 变量→可行域，其他→摘要）    |
+| `--visual-region`    | `*_region.png`       | 2D 可行域 + 等值线 + 最优解标记          |
+| `--visual-value`     | `*_value.png`        | 变量取值柱状图                           |
+| `--visual-resource`  | `*_resource.png`     | 资源利用率堆叠柱状图 + RHS 上限线        |
+| `--visual-objective` | `*_objective.png`    | 目标贡献占比饼图                         |
+| `--visual-heatmap`   | `*_heatmap.png`      | 约束系数矩阵热力图                       |
+
+### 报告选项
+
+所有报告输出为 YAML 格式到 `tmp/` 目录。
+
+| 参数                   | 输出文件              | 说明                                    |
+|-----------------------|----------------------|-----------------------------------------|
+| `--report-solution`   | `*_solution.yaml`    | 求解状态、目标值、变量值                  |
+| `--report-variable`   | `*_variable.yaml`    | 变量值、检验数、上下界、类型               |
+| `--report-constraint` | `*_constraint.yaml`  | 约束 LHS、RHS、slack、dual、是否 binding  |
+| `--report-objective`  | `*_objective.yaml`   | 各变量贡献（值 × 系数）及百分比            |
+
+### YAML 报告示例
+
+`--report-solution` → `tmp/factory_solution.yaml`:
+```yaml
+status: Optimal
+objective: 31540.0
+variables:
+  A: 87.0
+  B: 34.0
+  C: 0.0
+  D: 80.0
+```
+
+`--report-constraint` → `tmp/factory_constraint.yaml`:
+```yaml
+constraints:
+  - name: steel
+    lhs: 598.0
+    rhs: 600.0
+    slack: 2.0
+    dual: 0.0
+    binding: false
+  - name: labor
+    lhs: 800.0
+    rhs: 800.0
+    slack: 0.0
+    dual: 42.5
+    binding: true
+```
+
+`--report-objective` → `tmp/factory_objective.yaml`:
+```yaml
+total: 31540.0
+contributions:
+  - variable: A
+    coefficient: 120
+    value: 87.0
+    contribution: 10440.0
+    percentage: 33.1
+  - variable: D
+    coefficient: 200
+    value: 80.0
+    contribution: 16000.0
+    percentage: 50.7
+```

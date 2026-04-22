@@ -1,0 +1,40 @@
+# 饮食搭配问题（经典 LP）
+# ========================
+# 场景：用最低成本搭配一天的膳食，满足营养需求
+#
+# 食物    价格(元/100g)  蛋白质(g)  碳水(g)  脂肪(g)  维生素C(mg)
+# 米饭       1.0          2.5       28       0.3       0
+# 鸡胸肉     3.5          23        0        1.9       0
+# 西兰花     2.0          3.5       4        0.4       90
+# 鸡蛋       1.2          13        1.1      11        0
+# 牛奶       1.5          3.2       4.8      3.6       1
+#
+# 营养需求：
+#   蛋白质 >= 55g, 碳水 >= 130g, 脂肪 <= 70g, 维生素C >= 60mg
+# 食物摄入量 0~500g（无最低摄入限制）
+
+name: diet_optimization
+sense: minimize
+
+variables:
+  rice:     { lb: 0, ub: 500, cat: continuous }
+  chicken:  { lb: 0, ub: 500, cat: continuous }
+  broccoli: { lb: 0, ub: 500, cat: continuous }
+  egg:      { lb: 0, ub: 500, cat: continuous }
+  milk:     { lb: 0, ub: 500, cat: continuous }
+
+objective:
+  coefficients: { rice: 1.0, chicken: 3.5, broccoli: 2.0, egg: 1.2, milk: 1.5 }
+
+constraints:
+  - name: protein
+    expression: 2.5*rice + 23*chicken + 3.5*broccoli + 13*egg + 3.2*milk >= 55
+
+  - name: carbs
+    expression: 28*rice + 4*broccoli + 1.1*egg + 4.8*milk >= 130
+
+  - name: fat
+    expression: 0.3*rice + 1.9*chicken + 0.4*broccoli + 11*egg + 3.6*milk <= 70
+
+  - name: vitamin_c
+    expression: 90*broccoli + milk >= 60

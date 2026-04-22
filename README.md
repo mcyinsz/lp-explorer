@@ -7,8 +7,9 @@ A unified ILP (Integer Linear Programming) solver framework based on PuLP + CBC.
 - **YAML-based problem definition** — describe variables, objective, and constraints in a simple config file
 - **Flexible constraint syntax** — use either human-readable expressions (`x + y >= 10`) or structured dicts
 - **Variable types** — continuous, integer, and binary
-- **Sensitivity analysis** — constraint slack and dual values (shadow prices)
-- **Visualization** — 2D feasible region plot for 2-variable problems; variable value + slack bar charts for general problems
+- **Sensitivity analysis** — constraint slack, dual values (shadow prices), reduced costs
+- **5 visualization types** — feasible region, variable values, resource utilization, objective breakdown, constraint heatmap
+- **4 YAML report types** — solution summary, variable detail, constraint detail, objective decomposition
 
 ## Quick Start
 
@@ -21,11 +22,26 @@ pip install -r requirements.txt
 ### Run an example
 
 ```bash
-# Basic solve
+# Basic solve (text output only)
 python solver.py examples/knapsack.yaml
 
-# Solve with visualization
+# Generate all visualizations
 python solver.py examples/production.yaml -v
+
+# Individual visualizations
+python solver.py examples/factory.yaml --visual-value
+python solver.py examples/factory.yaml --visual-resource
+python solver.py examples/factory.yaml --visual-objective
+python solver.py examples/factory.yaml --visual-heatmap
+python solver.py examples/production.yaml --visual-region
+
+# YAML reports
+python solver.py examples/factory.yaml --report-solution
+python solver.py examples/factory.yaml --report-variable --report-constraint
+python solver.py examples/factory.yaml --report-objective
+
+# Combine freely
+python solver.py examples/factory.yaml --visual-resource --visual-objective --report-solution
 ```
 
 ### Python API
@@ -179,11 +195,13 @@ class SolutionResult:
     variables: dict[str, Optional[float]]  # Variable values, e.g. {"x": 10.0, "y": 0.0}
     duals: dict[str, Optional[float]]      # Shadow prices (dual values) per constraint
     slacks: dict[str, float]               # Slack per constraint
+    reduced_costs: dict[str, Optional[float]]  # Reduced cost per variable
 ```
 
 - `slacks["demand"] = -0.0` means the constraint is binding (active at equality)
 - `duals["demand"] = 2.0` means relaxing the demand constraint by 1 unit changes the objective by 2
-- For ILP problems, `duals` come from the LP relaxation and are not exact
+- `reduced_costs["x"] = 0` for variables in the optimal basis; non-zero for variables at their bounds
+- For ILP problems, `duals` and `reduced_costs` come from LP relaxation and are not exact
 
 ---
 
@@ -365,10 +383,13 @@ Each constraint builds a linear LHS expression, then forms `lhs <= rhs` based on
             for name, constraint in prob.constraints.items():
                 duals[name] = constraint.pi            # Shadow price (dual value)
                 slacks[name] = constraint.slack        # Slack
+
+        reduced_costs = {name: v.dj for name, v in self._vars.items()}
 ```
 
 - `constraint.pi` — dual variable value (shadow price): how much the objective changes when RHS increases by 1
 - `constraint.slack` — slack: 0 means binding (active at equality), positive means slack
+- `v.dj` — reduced cost: how much the objective coefficient of a non-basic variable must improve before it enters the basis
 
 ```python
         self.result = SolutionResult(
@@ -377,6 +398,7 @@ Each constraint builds a linear LHS expression, then forms `lhs <= rhs` based on
             variables={name: v.varValue for name, v in self._vars.items()},
             duals=duals,
             slacks=slacks,
+            reduced_costs=reduced_costs,
         )
         return self.result
 ```
@@ -535,11 +557,12 @@ def _plot_summary(cfg, result, output_path):
 lp-explorer/
 ├── models.py          # Data models (VariableSpec, ConstraintSpec, SolutionResult, etc.)
 ├── solver.py          # ILPSolver class: YAML parse → PuLP model → CBC solve → output
-├── visualizer.py      # Visualization: 2D feasible region / summary bar charts
+├── visualizer.py      # 5 chart types + backward-compatible auto-detect
 ├── requirements.txt   # Python dependencies
 ├── examples/          # Example problem definitions
 │   ├── knapsack.yaml  # 0-1 knapsack (structured constraint syntax)
-│   └── production.yaml # Production plan (expression constraint syntax)
+│   ├── production.yaml # Production plan (expression constraint syntax)
+│   └── factory.yaml   # Multi-product factory (4 variables, 4 constraints)
 └── tmp/               # Generated outputs (gitignored)
 ```
 
@@ -552,10 +575,75 @@ For continuous LP subproblems, CBC uses the **simplex method**. For integer/bina
 ## CLI Reference
 
 ```
-python solver.py <config.yaml> [-v, --visualize]
+python solver.py <config.yaml> [options]
 ```
 
-| Argument        | Description                         |
-|-----------------|-------------------------------------|
-| `config`        | Path to YAML problem definition     |
-| `--visualize`   | Generate visualization to `tmp/`    |
+### Visualization Options
+
+All outputs go to `tmp/` directory.
+
+| Argument              | Output File            | Description                                  |
+|-----------------------|------------------------|----------------------------------------------|
+| `-v`, `--visualize`   | `*_result.png`         | Generate default visualization (region or summary) |
+| `--visual-region`     | `*_region.png`         | 2D feasible region + iso-profit lines + optimal point |
+| `--visual-value`      | `*_value.png`          | Variable values bar chart                    |
+| `--visual-resource`   | `*_resource.png`       | Resource utilization stacked bars + RHS limit |
+| `--visual-objective`  | `*_objective.png`      | Objective contribution pie chart             |
+| `--visual-heatmap`    | `*_heatmap.png`        | Constraint coefficient matrix heatmap        |
+
+### Report Options
+
+All reports output as YAML to `tmp/` directory.
+
+| Argument              | Output File            | Description                                  |
+|-----------------------|------------------------|----------------------------------------------|
+| `--report-solution`   | `*_solution.yaml`      | Status, objective value, variable values      |
+| `--report-variable`   | `*_variable.yaml`      | Value, reduced cost, bounds, type per variable |
+| `--report-constraint` | `*_constraint.yaml`    | LHS, RHS, slack, dual, binding flag per constraint |
+| `--report-objective`  | `*_objective.yaml`     | Per-variable contribution (value × coefficient) and percentage |
+
+### Report YAML Examples
+
+`--report-solution` → `tmp/factory_solution.yaml`:
+```yaml
+status: Optimal
+objective: 31540.0
+variables:
+  A: 87.0
+  B: 34.0
+  C: 0.0
+  D: 80.0
+```
+
+`--report-constraint` → `tmp/factory_constraint.yaml`:
+```yaml
+constraints:
+  - name: steel
+    lhs: 598.0
+    rhs: 600.0
+    slack: 2.0
+    dual: 0.0
+    binding: false
+  - name: labor
+    lhs: 800.0
+    rhs: 800.0
+    slack: 0.0
+    dual: 42.5
+    binding: true
+```
+
+`--report-objective` → `tmp/factory_objective.yaml`:
+```yaml
+total: 31540.0
+contributions:
+  - variable: A
+    coefficient: 120
+    value: 87.0
+    contribution: 10440.0
+    percentage: 33.1
+  - variable: D
+    coefficient: 200
+    value: 80.0
+    contribution: 16000.0
+    percentage: 50.7
+```
