@@ -1,0 +1,17 @@
+name: knapsack_01
+sense: maximize
+
+variables:
+  x1: { cat: binary }
+  x2: { cat: binary }
+  x3: { cat: binary }
+  x4: { cat: binary }
+
+objective:
+  coefficients: { x1: 16, x2: 22, x3: 12, x4: 8 }
+
+constraints:
+  - name: weight
+    coefficients: { x1: 5, x2: 7, x3: 4, x4: 3 }
+    sense: le
+    rhs: 14

@@ -1,0 +1,40 @@
+# 工厂生产计划问题
+# ==================
+# 场景：一家工厂生产 4 种产品，使用 3 种资源（钢材、工时、电力）
+# 目标：在资源约束下最大化利润
+#
+# 产品信息：
+#   产品    利润/件   钢材(kg)  工时(h)  电力(kWh)
+#   A       120       2         3        5
+#   B       150       3         4        4
+#   C        80       1.5       2        6
+#   D       200       4         5        3
+#
+# 资源上限：钢材 600kg，工时 800h，电力 1000kWh
+# 市场需求：A 最多卖 100 件，B 最多卖 120 件，C 最多卖 200 件，D 最多卖 80 件
+# 最少产量：A 至少生产 20 件（合同承诺）
+
+name: factory_production
+sense: maximize
+
+variables:
+  A: { lb: 20, ub: 100, cat: integer }    # 产品A：合同保底20件，市场最多100件
+  B: { lb: 0, ub: 120, cat: integer }      # 产品B
+  C: { lb: 0, ub: 200, cat: integer }      # 产品C
+  D: { lb: 0, ub: 80, cat: integer }       # 产品D
+
+objective:
+  coefficients: { A: 120, B: 150, C: 80, D: 200 }
+
+constraints:
+  - name: steel
+    expression: 2*A + 3*B + 1.5*C + 4*D <= 600
+
+  - name: labor
+    expression: 3*A + 4*B + 2*C + 5*D <= 800
+
+  - name: electricity
+    expression: 5*A + 4*B + 6*C + 3*D <= 1000
+
+  - name: min_B_share
+    expression: B >= 0.2*A + 0.2*C + 0.2*D

@@ -1,0 +1,15 @@
+name: production_plan
+sense: minimize
+
+variables:
+  x: { lb: 0, cat: integer }
+  y: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { x: 2, y: 3 }
+
+constraints:
+  - name: demand
+    expression: x + y >= 10
+  - name: capacity
+    expression: 2*x + y >= 14
