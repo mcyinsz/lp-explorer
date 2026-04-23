@@ -19,6 +19,8 @@ from visualizer import (
 
 _OP_MAP = {">=": "ge", "<=": "le", "==": "eq"}
 _CAT_MAP = {"continuous": pulp.LpContinuous, "integer": pulp.LpInteger, "binary": pulp.LpBinary}
+_VALID_PROBLEM_SENSES = {"minimize", "maximize"}
+_VALID_CONSTRAINT_SENSES = {"le", "ge", "eq"}
 
 _VISUAL_FLAGS = [
     "visual_region",
@@ -66,10 +68,9 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
         # Match bare variable names (no * and no coefficient), e.g. "A", "+ B", "- C"
         for match in re.finditer(r"(?:^|(?<=[-+\s]))([+-]?)\s*([A-Za-z_]\w*)(?!\s*\*|\d)", s):
             var = match.group(2)
-            if var not in coeffs:
-                sign = match.group(1)
-                coeffs[var] = -1.0 if sign == "-" else 1.0
-                consumed = consumed.replace(match.group(0), "", 1)
+            sign = match.group(1)
+            coeffs[var] = coeffs.get(var, 0) + (-1.0 if sign == "-" else 1.0)
+            consumed = consumed.replace(match.group(0), "", 1)
         # Extract standalone constant (number not adjacent to a variable)
         remaining = re.sub(r"[A-Za-z_]\w*", "", consumed)
         const_match = re.search(r"[-+]?\s*\d+\.?\d*", remaining)
@@ -91,13 +92,19 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
 
 
 def _parse_variable(name: str, spec: dict) -> VariableSpec:
-    if spec.get("cat") == "binary":
+    cat = spec.get("cat", "continuous")
+    if cat not in _CAT_MAP:
+        raise ValueError(
+            f"Invalid category '{cat}' for variable '{name}'. "
+            f"Expected one of: {', '.join(sorted(_CAT_MAP))}."
+        )
+    if cat == "binary":
         return VariableSpec(name=name, lb=0, ub=1, cat="binary")
     return VariableSpec(
         name=name,
         lb=spec.get("lb", 0),
         ub=spec.get("ub"),
-        cat=spec.get("cat", "continuous"),
+        cat=cat,
     )
 
 
@@ -109,6 +116,11 @@ def _parse_constraint(raw: dict, index: int) -> ConstraintSpec:
         coefficients = dict(raw["coefficients"])
         sense = raw["sense"]
         rhs = float(raw["rhs"])
+    if sense not in _VALID_CONSTRAINT_SENSES:
+        raise ValueError(
+            f"Invalid sense '{sense}' for constraint '{name}'. "
+            f"Expected one of: {', '.join(sorted(_VALID_CONSTRAINT_SENSES))}."
+        )
     return ConstraintSpec(name=name, coefficients=coefficients, sense=sense, rhs=rhs)
 
 
@@ -116,13 +128,36 @@ def load_config(path: str) -> ProblemConfig:
     with open(path) as f:
         data = yaml.safe_load(f)
 
+    sense = data.get("sense", "minimize")
+    if sense not in _VALID_PROBLEM_SENSES:
+        raise ValueError(
+            f"Invalid problem sense '{sense}'. "
+            f"Expected one of: {', '.join(sorted(_VALID_PROBLEM_SENSES))}."
+        )
+
     variables = {name: _parse_variable(name, spec) for name, spec in data["variables"].items()}
     objective = ObjectiveSpec(coefficients=data["objective"]["coefficients"])
     constraints = [_parse_constraint(c, i) for i, c in enumerate(data.get("constraints", []))]
 
+    known_vars = set(variables)
+    unknown_objective_vars = sorted(set(objective.coefficients) - known_vars)
+    if unknown_objective_vars:
+        raise ValueError(
+            "Objective references undefined variable(s): "
+            + ", ".join(unknown_objective_vars)
+        )
+
+    for constraint in constraints:
+        unknown_constraint_vars = sorted(set(constraint.coefficients) - known_vars)
+        if unknown_constraint_vars:
+            raise ValueError(
+                f"Constraint '{constraint.name}' references undefined variable(s): "
+                + ", ".join(unknown_constraint_vars)
+            )
+
     return ProblemConfig(
         name=data["name"],
-        sense=data.get("sense", "minimize"),
+        sense=sense,
         variables=variables,
         objective=objective,
         constraints=constraints,
@@ -140,6 +175,7 @@ class ILPSolver:
         cfg = self.config
         sense = pulp.LpMinimize if cfg.sense == "minimize" else pulp.LpMaximize
         prob = pulp.LpProblem(cfg.name, sense)
+        self._vars = {}
 
         # Variables
         for name, spec in cfg.variables.items():
@@ -170,14 +206,19 @@ class ILPSolver:
                 slacks[name] = constraint.slack
 
         reduced_costs = {name: v.dj for name, v in self._vars.items()}
+        status_str = pulp.LpStatus[status]
+        has_solution = status_str == "Optimal"
 
         self.result = SolutionResult(
-            status=pulp.LpStatus[status],
-            objective_value=pulp.value(prob.objective),
-            variables={name: v.varValue for name, v in self._vars.items()},
-            duals=duals,
-            slacks=slacks,
-            reduced_costs=reduced_costs,
+            status=status_str,
+            objective_value=pulp.value(prob.objective) if has_solution else None,
+            variables={
+                name: (v.varValue if has_solution else None)
+                for name, v in self._vars.items()
+            },
+            duals=duals if has_solution else {},
+            slacks=slacks if has_solution else {},
+            reduced_costs=reduced_costs if has_solution else {},
         )
         return self.result
 
@@ -215,13 +256,15 @@ class ILPSolver:
 
     def report_solution(self) -> str:
         r = self.result
+        if r is None:
+            raise ValueError("Problem not solved yet.")
         lines = [
             f"# Solution Report — {self.config.name}",
             f"# status: solver termination status (Optimal / Infeasible / Unbounded)",
             f"# objective: optimal objective value (null if no feasible solution)",
             f"# variables: optimal value of each decision variable",
             f"status: {r.status}",
-            f"objective: {r.objective_value}",
+            f"objective: {'null' if r.objective_value is None else r.objective_value}",
             f"variables:",
         ]
         for k, v in r.variables.items():
@@ -232,6 +275,8 @@ class ILPSolver:
     def report_variable(self) -> str:
         r = self.result
         cfg = self.config
+        if r is None:
+            raise ValueError("Problem not solved yet.")
         lines = [
             f"# Variable Detail Report — {self.config.name}",
             f"# name: variable name",
@@ -244,12 +289,13 @@ class ILPSolver:
         ]
         for name, spec in cfg.variables.items():
             val = r.variables.get(name)
-            rc = r.reduced_costs.get(name, 0)
+            rc = r.reduced_costs.get(name)
             v_str = "null" if val is None else round(val, 6)
+            rc_str = "null" if rc is None else round(rc, 6)
             ub_str = "null" if spec.ub is None else spec.ub
             lines.append(f"  - name: {name}")
             lines.append(f"    value: {v_str}")
-            lines.append(f"    reduced_cost: {round(rc, 6)}")
+            lines.append(f"    reduced_cost: {rc_str}")
             lines.append(f"    lower_bound: {spec.lb}")
             lines.append(f"    upper_bound: {ub_str}")
             lines.append(f"    type: {spec.cat}")
@@ -258,6 +304,9 @@ class ILPSolver:
     def report_constraint(self) -> str:
         r = self.result
         cfg = self.config
+        if r is None:
+            raise ValueError("Problem not solved yet.")
+        has_primal_solution = all(val is not None for val in r.variables.values())
         lines = [
             f"# Constraint Detail Report — {self.config.name}",
             f"# lhs: left-hand side value (sum of coefficient * variable_value at optimal)",
@@ -271,21 +320,28 @@ class ILPSolver:
         ]
         for c in cfg.constraints:
             lhs = sum(c.coefficients.get(v, 0) * (r.variables.get(v) or 0) for v in r.variables)
-            slack = r.slacks.get(c.name, 0)
+            slack = r.slacks.get(c.name)
             dual = r.duals.get(c.name)
+            lhs_str = "null" if not has_primal_solution else round(lhs, 6)
+            slack_str = "null" if slack is None else round(slack, 6)
             d_str = "null" if dual is None else round(dual, 6)
             lines.append(f"  - name: {c.name}")
-            lines.append(f"    lhs: {round(lhs, 6)}")
+            lines.append(f"    lhs: {lhs_str}")
             lines.append(f"    rhs: {c.rhs}")
-            lines.append(f"    slack: {round(slack, 6)}")
+            lines.append(f"    slack: {slack_str}")
             lines.append(f"    dual: {d_str}")
-            lines.append(f"    binding: {str(abs(slack) < 1e-9).lower()}")
+            lines.append(
+                f"    binding: {'null' if slack is None else str(abs(slack) < 1e-9).lower()}"
+            )
         return "\n".join(lines) + "\n"
 
     def report_objective(self) -> str:
         r = self.result
         cfg = self.config
-        total = r.objective_value or 0
+        if r is None:
+            raise ValueError("Problem not solved yet.")
+        total = r.objective_value
+        total_str = "null" if total is None else round(total, 6)
         lines = [
             f"# Objective Decomposition Report — {self.config.name}",
             f"# total: overall optimal objective value",
@@ -295,17 +351,21 @@ class ILPSolver:
             f"#   value: optimal value of this variable",
             f"#   contribution: coefficient × value = this variable's share of the objective",
             f"#   percentage: |contribution| / |total| × 100",
-            f"total: {round(total, 6)}",
+            f"total: {total_str}",
             f"contributions:",
         ]
         for var, coef in cfg.objective.coefficients.items():
-            val = r.variables.get(var) or 0
-            contrib = coef * val
-            pct = round(abs(contrib) / abs(total) * 100, 1) if abs(total) > 1e-9 else 0
+            val = r.variables.get(var)
+            contrib = None if val is None else coef * val
+            pct = (
+                round(abs(contrib) / abs(total) * 100, 1)
+                if contrib is not None and total is not None and abs(total) > 1e-9
+                else 0
+            )
             lines.append(f"  - variable: {var}")
             lines.append(f"    coefficient: {coef}")
-            lines.append(f"    value: {round(val, 6)}")
-            lines.append(f"    contribution: {round(contrib, 6)}")
+            lines.append(f"    value: {'null' if val is None else round(val, 6)}")
+            lines.append(f"    contribution: {'null' if contrib is None else round(contrib, 6)}")
             lines.append(f"    percentage: {pct}")
         return "\n".join(lines) + "\n"
 

@@ -96,6 +96,18 @@ class TestParseExpression:
         assert coeffs == {"x": 3}
         assert rhs == 10.0
 
+    def test_multiple_same_bare_variable(self):
+        coeffs, sense, rhs = _parse_expression("x + x >= 10")
+        assert coeffs == {"x": 2}
+        assert sense == "ge"
+        assert rhs == 10.0
+
+    def test_mixed_bare_and_weighted_same_variable(self):
+        coeffs, sense, rhs = _parse_expression("x + 2*x >= 10")
+        assert coeffs == {"x": 3}
+        assert sense == "ge"
+        assert rhs == 10.0
+
 
 # ============================================================
 # 2. YAML 加载测试
@@ -162,6 +174,82 @@ class TestLoadConfig:
         cfg = load_config(path)
         os.unlink(path)
         assert cfg.is_integer is True
+
+    def test_invalid_problem_sense_raises(self):
+        path = self._write_yaml({
+            "name": "test",
+            "sense": "foo",
+            "variables": {"x": {}},
+            "objective": {"coefficients": {"x": 1}},
+            "constraints": [],
+        })
+        try:
+            load_config(path)
+            assert False, "Expected invalid problem sense to raise"
+        except ValueError as e:
+            assert "Invalid problem sense" in str(e)
+        finally:
+            os.unlink(path)
+
+    def test_invalid_variable_category_raises(self):
+        path = self._write_yaml({
+            "name": "test",
+            "variables": {"x": {"cat": "foo"}},
+            "objective": {"coefficients": {"x": 1}},
+            "constraints": [],
+        })
+        try:
+            load_config(path)
+            assert False, "Expected invalid variable category to raise"
+        except ValueError as e:
+            assert "Invalid category" in str(e)
+        finally:
+            os.unlink(path)
+
+    def test_invalid_constraint_sense_raises(self):
+        path = self._write_yaml({
+            "name": "test",
+            "variables": {"x": {}},
+            "objective": {"coefficients": {"x": 1}},
+            "constraints": [{"name": "c1", "coefficients": {"x": 1}, "sense": "foo", "rhs": 10}],
+        })
+        try:
+            load_config(path)
+            assert False, "Expected invalid constraint sense to raise"
+        except ValueError as e:
+            assert "Invalid sense" in str(e)
+        finally:
+            os.unlink(path)
+
+    def test_unknown_variable_in_objective_raises(self):
+        path = self._write_yaml({
+            "name": "test",
+            "variables": {"x": {}},
+            "objective": {"coefficients": {"y": 1}},
+            "constraints": [],
+        })
+        try:
+            load_config(path)
+            assert False, "Expected undefined objective variable to raise"
+        except ValueError as e:
+            assert "Objective references undefined variable(s): y" == str(e)
+        finally:
+            os.unlink(path)
+
+    def test_unknown_variable_in_constraint_raises(self):
+        path = self._write_yaml({
+            "name": "test",
+            "variables": {"x": {}},
+            "objective": {"coefficients": {"x": 1}},
+            "constraints": [{"name": "c1", "coefficients": {"y": 2}, "sense": "le", "rhs": 10}],
+        })
+        try:
+            load_config(path)
+            assert False, "Expected undefined constraint variable to raise"
+        except ValueError as e:
+            assert "Constraint 'c1' references undefined variable(s): y" == str(e)
+        finally:
+            os.unlink(path)
 
 
 # ============================================================
@@ -338,6 +426,87 @@ class TestReports:
         # Check percentage sums to ~100
         total_pct = sum(c["percentage"] for c in data["contributions"])
         assert abs(total_pct - 100.0) < 1.0
+
+    def test_reports_use_nulls_for_infeasible_problem(self):
+        data = {
+            "name": "infeasible_report",
+            "sense": "minimize",
+            "variables": {"x": {"lb": 0, "cat": "continuous"}},
+            "objective": {"coefficients": {"x": 1}},
+            "constraints": [
+                {"name": "c1", "expression": "x >= 10"},
+                {"name": "c2", "expression": "x <= 5"},
+            ],
+        }
+        path = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        yaml.dump(data, path, default_flow_style=False)
+        path.close()
+        solver = ILPSolver(path.name)
+        solver.solve()
+        os.unlink(path.name)
+
+        solution = yaml.safe_load(solver.report_solution())
+        variable = yaml.safe_load(solver.report_variable())
+        constraint = yaml.safe_load(solver.report_constraint())
+        objective = yaml.safe_load(solver.report_objective())
+
+        assert solution["status"] == "Infeasible"
+        assert solution["objective"] is None
+        assert solution["variables"]["x"] is None
+        assert variable["variables"][0]["value"] is None
+        assert variable["variables"][0]["reduced_cost"] is None
+        assert constraint["constraints"][0]["lhs"] is None
+        assert constraint["constraints"][0]["slack"] is None
+        assert constraint["constraints"][0]["dual"] is None
+        assert constraint["constraints"][0]["binding"] is None
+        assert objective["total"] is None
+        assert objective["contributions"][0]["value"] is None
+        assert objective["contributions"][0]["contribution"] is None
+
+
+class TestVisualizationLogic:
+
+    def test_feasible_region_bounds_for_le_constraints(self):
+        data = {
+            "name": "viz_test",
+            "sense": "maximize",
+            "variables": {"x": {"lb": 0, "cat": "continuous"}, "y": {"lb": 0, "cat": "continuous"}},
+            "objective": {"coefficients": {"x": 1, "y": 1}},
+            "constraints": [
+                {"name": "c1", "expression": "x + y <= 10"},
+                {"name": "c2", "expression": "x <= 8"},
+            ],
+        }
+        path = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        yaml.dump(data, path, default_flow_style=False)
+        path.close()
+        solver = ILPSolver(path.name)
+        solver.solve()
+        os.unlink(path.name)
+
+        import numpy as np
+
+        xs = np.array([0.0, 5.0, 10.0])
+        bound = 20.0
+        y_min = np.full_like(xs, 0.0)
+        y_max = np.full_like(xs, bound, dtype=float)
+
+        for c in solver.config.constraints:
+            cx = c.coefficients.get("x", 0)
+            cy = c.coefficients.get("y", 0)
+            if cy == 0:
+                continue
+            ys = (c.rhs - cx * xs) / cy
+            if c.sense == "ge":
+                y_min = np.maximum(y_min, ys)
+            elif c.sense == "le":
+                y_max = np.minimum(y_max, ys)
+            else:
+                y_min = np.maximum(y_min, ys)
+                y_max = np.minimum(y_max, ys)
+
+        assert y_min.tolist() == [0.0, 0.0, 0.0]
+        assert y_max.tolist() == [10.0, 5.0, 0.0]
 
 
 # ============================================================

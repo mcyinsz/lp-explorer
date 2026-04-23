@@ -51,7 +51,8 @@ def plot_2d_region(cfg: ProblemConfig, result: SolutionResult, output_path: str)
         label = f"{_expr_str(c)} {_sense_to_op(c.sense)} {c.rhs}"
         ax.plot(xs, ys, label=label)
 
-    y_lower = np.full_like(xs, 0)
+    y_min = np.full_like(xs, 0.0)
+    y_max = np.full_like(xs, bound, dtype=float)
     for c in cfg.constraints:
         cx = c.coefficients.get(xname, 0)
         cy = c.coefficients.get(yname, 0)
@@ -59,10 +60,22 @@ def plot_2d_region(cfg: ProblemConfig, result: SolutionResult, output_path: str)
             continue
         ys = (c.rhs - cx * xs) / cy
         if c.sense == "ge":
-            y_lower = np.maximum(y_lower, ys)
+            y_min = np.maximum(y_min, ys)
+        elif c.sense == "le":
+            y_max = np.minimum(y_max, ys)
         else:
-            y_lower = np.minimum(y_lower, ys)
-    ax.fill_between(xs, y_lower, bound, alpha=0.15, color="green", label="feasible region")
+            y_min = np.maximum(y_min, ys)
+            y_max = np.minimum(y_max, ys)
+    feasible_mask = y_max >= y_min
+    ax.fill_between(
+        xs,
+        y_min,
+        y_max,
+        where=feasible_mask,
+        alpha=0.15,
+        color="green",
+        label="feasible region",
+    )
 
     # Iso-profit lines
     cx_obj = cfg.objective.coefficients.get(xname, 0)
