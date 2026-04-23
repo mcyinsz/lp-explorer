@@ -1,0 +1,37 @@
+name: facility_location
+sense: minimize
+
+variables:
+  y1: { cat: binary }
+  y2: { cat: binary }
+  x11: { lb: 0, cat: continuous }
+  x12: { lb: 0, cat: continuous }
+  x13: { lb: 0, cat: continuous }
+  x21: { lb: 0, cat: continuous }
+  x22: { lb: 0, cat: continuous }
+  x23: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { y1: 100, y2: 150, x11: 2, x12: 3, x13: 5, x21: 4, x22: 1, x23: 3 }
+
+constraints:
+  - name: demand1
+    coefficients: { x11: 1, x21: 1 }
+    sense: eq
+    rhs: 50
+  - name: demand2
+    coefficients: { x12: 1, x22: 1 }
+    sense: eq
+    rhs: 60
+  - name: demand3
+    coefficients: { x13: 1, x23: 1 }
+    sense: eq
+    rhs: 40
+  - name: link1
+    coefficients: { x11: 1, x12: 1, x13: 1, y1: -200 }
+    sense: le
+    rhs: 0
+  - name: link2
+    coefficients: { x21: 1, x22: 1, x23: 1, y2: -200 }
+    sense: le
+    rhs: 0

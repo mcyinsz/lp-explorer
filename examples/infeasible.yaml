@@ -1,0 +1,19 @@
+name: infeasible_lp
+sense: maximize
+
+variables:
+  x1: { lb: 0, cat: continuous }
+  x2: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { x1: 1, x2: 1 }
+
+constraints:
+  - name: c1
+    coefficients: { x1: 1, x2: 1 }
+    sense: le
+    rhs: 2
+  - name: c2
+    coefficients: { x1: 1, x2: 1 }
+    sense: ge
+    rhs: 5

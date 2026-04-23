@@ -1,0 +1,42 @@
+name: assignment_3x3
+sense: minimize
+
+variables:
+  x11: { cat: binary }
+  x12: { cat: binary }
+  x13: { cat: binary }
+  x21: { cat: binary }
+  x22: { cat: binary }
+  x23: { cat: binary }
+  x31: { cat: binary }
+  x32: { cat: binary }
+  x33: { cat: binary }
+
+objective:
+  coefficients: { x11: 9, x12: 2, x13: 7, x21: 6, x22: 4, x23: 3, x31: 5, x32: 8, x33: 1 }
+
+constraints:
+  - name: w1
+    coefficients: { x11: 1, x12: 1, x13: 1 }
+    sense: eq
+    rhs: 1
+  - name: w2
+    coefficients: { x21: 1, x22: 1, x23: 1 }
+    sense: eq
+    rhs: 1
+  - name: w3
+    coefficients: { x31: 1, x32: 1, x33: 1 }
+    sense: eq
+    rhs: 1
+  - name: j1
+    coefficients: { x11: 1, x21: 1, x31: 1 }
+    sense: eq
+    rhs: 1
+  - name: j2
+    coefficients: { x12: 1, x22: 1, x32: 1 }
+    sense: eq
+    rhs: 1
+  - name: j3
+    coefficients: { x13: 1, x23: 1, x33: 1 }
+    sense: eq
+    rhs: 1

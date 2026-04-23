@@ -1,0 +1,15 @@
+name: unbounded_lp
+sense: maximize
+
+variables:
+  x1: { lb: 0, cat: continuous }
+  x2: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { x1: 1, x2: 1 }
+
+constraints:
+  - name: c1
+    coefficients: { x1: 1, x2: -1 }
+    sense: ge
+    rhs: 1

@@ -1,0 +1,23 @@
+name: classic_diet
+sense: minimize
+
+variables:
+  x1: { lb: 0, cat: continuous }
+  x2: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { x1: 1, x2: 2 }
+
+constraints:
+  - name: protein
+    coefficients: { x1: 50, x2: 250 }
+    sense: ge
+    rhs: 500
+  - name: mineral
+    coefficients: { x1: 240, x2: 80 }
+    sense: ge
+    rhs: 960
+  - name: total_weight
+    coefficients: { x1: 1, x2: 1 }
+    sense: ge
+    rhs: 6

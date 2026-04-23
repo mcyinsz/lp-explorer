@@ -1,0 +1,23 @@
+name: classic_production
+sense: maximize
+
+variables:
+  x1: { lb: 0, cat: continuous }
+  x2: { lb: 0, cat: continuous }
+
+objective:
+  coefficients: { x1: 3, x2: 2 }
+
+constraints:
+  - name: resource1
+    coefficients: { x1: 2, x2: 1 }
+    sense: le
+    rhs: 100
+  - name: resource2
+    coefficients: { x1: 1, x2: 1 }
+    sense: le
+    rhs: 80
+  - name: resource3
+    coefficients: { x1: 1 }
+    sense: le
+    rhs: 40

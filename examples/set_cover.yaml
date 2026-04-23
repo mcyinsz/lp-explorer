@@ -1,0 +1,29 @@
+name: set_cover_4elem
+sense: minimize
+
+variables:
+  x1: { cat: binary }
+  x2: { cat: binary }
+  x3: { cat: binary }
+  x4: { cat: binary }
+
+objective:
+  coefficients: { x1: 3, x2: 2, x3: 4, x4: 3 }
+
+constraints:
+  - name: cover1
+    coefficients: { x1: 1, x4: 1 }
+    sense: ge
+    rhs: 1
+  - name: cover2
+    coefficients: { x1: 1, x2: 1 }
+    sense: ge
+    rhs: 1
+  - name: cover3
+    coefficients: { x2: 1, x3: 1 }
+    sense: ge
+    rhs: 1
+  - name: cover4
+    coefficients: { x3: 1, x4: 1 }
+    sense: ge
+    rhs: 1
