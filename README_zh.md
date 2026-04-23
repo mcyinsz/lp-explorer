@@ -551,6 +551,15 @@ def _plot_summary(cfg, result, output_path):
 
 ---
 
+## 验证
+
+一键验证所有示例是否与已知最优解吻合：
+
+```bash
+python validate.py           # 返回退出码 0（通过）或 1（失败）
+python validate.py 2>/dev/null  # 静默 CBC 求解器输出
+```
+
 ## 项目结构
 
 ```
@@ -558,11 +567,21 @@ lp-explorer/
 ├── models.py          # 数据模型（VariableSpec, ConstraintSpec, SolutionResult 等）
 ├── solver.py          # ILPSolver 类：YAML 解析 → PuLP 建模 → CBC 求解 → 结果输出
 ├── visualizer.py      # 5 种图表 + 向后兼容的自动检测
+├── validate.py        # 一键验证脚本，校验全部示例与已知最优解
 ├── requirements.txt   # Python 依赖
 ├── examples/          # 示例问题定义
-│   ├── knapsack.yaml  # 0-1 背包问题（结构化约束写法）
-│   ├── production.yaml # 生产计划问题（表达式约束写法）
-│   └── factory.yaml   # 多产品工厂排产（4 变量、4 约束）
+│   ├── knapsack.yaml              # 0-1 背包问题（结构化约束写法）
+│   ├── production.yaml            # 生产计划问题（表达式约束写法）
+│   ├── factory.yaml               # 多产品工厂排产（4 变量、4 约束）
+│   ├── diet.yaml                  # 饮食问题（最小化成本，LP 松弛）
+│   ├── classic_production.yaml    # 经典 2 变量 LP 最大化
+│   ├── classic_diet.yaml          # 经典 2 变量饮食最小化
+│   ├── binary_knapsack_3item.yaml # 3 物品 0-1 背包
+│   ├── set_cover.yaml             # 集合覆盖（4 个二值变量）
+│   ├── facility_location.yaml     # 无容量设施选址（MILP）
+│   ├── assignment.yaml            # 3×3 指派问题
+│   ├── unbounded.yaml             # 无界 LP
+│   └── infeasible.yaml            # 不可行 LP
 └── tmp/               # 生成产物（已 gitignore）
 ```
 

@@ -551,6 +551,15 @@ def _plot_summary(cfg, result, output_path):
 
 ---
 
+## Validation
+
+Run the validation script to verify all examples against known optimal solutions:
+
+```bash
+python validate.py           # returns exit code 0 (pass) or 1 (fail)
+python validate.py 2>/dev/null  # suppress CBC solver output
+```
+
 ## Project Structure
 
 ```
@@ -558,11 +567,21 @@ lp-explorer/
 ├── models.py          # Data models (VariableSpec, ConstraintSpec, SolutionResult, etc.)
 ├── solver.py          # ILPSolver class: YAML parse → PuLP model → CBC solve → output
 ├── visualizer.py      # 5 chart types + backward-compatible auto-detect
+├── validate.py        # One-click validation runner for all examples
 ├── requirements.txt   # Python dependencies
 ├── examples/          # Example problem definitions
-│   ├── knapsack.yaml  # 0-1 knapsack (structured constraint syntax)
-│   ├── production.yaml # Production plan (expression constraint syntax)
-│   └── factory.yaml   # Multi-product factory (4 variables, 4 constraints)
+│   ├── knapsack.yaml              # 0-1 knapsack (structured constraint syntax)
+│   ├── production.yaml            # Production plan (expression constraint syntax)
+│   ├── factory.yaml               # Multi-product factory (4 variables, 4 constraints)
+│   ├── diet.yaml                  # Diet problem (minimize cost, LP relaxation)
+│   ├── classic_production.yaml    # 2-variable LP maximization
+│   ├── classic_diet.yaml          # 2-variable diet minimization
+│   ├── binary_knapsack_3item.yaml # 3-item binary knapsack
+│   ├── set_cover.yaml             # Set cover (4 binary variables)
+│   ├── facility_location.yaml     # Uncapacitated facility location (MILP)
+│   ├── assignment.yaml            # 3×3 assignment problem
+│   ├── unbounded.yaml             # Unbounded LP
+│   └── infeasible.yaml            # Infeasible LP
 └── tmp/               # Generated outputs (gitignored)
 ```
 
