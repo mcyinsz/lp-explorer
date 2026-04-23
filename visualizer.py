@@ -193,6 +193,65 @@ def plot_constraint_heatmap(cfg: ProblemConfig, result: SolutionResult, output_p
 
 
 # ============================================================
+# 约束间隙图：LHS vs RHS + slack/surplus
+# ============================================================
+
+def plot_constraint_gap(cfg: ProblemConfig, result: SolutionResult, output_path: str) -> None:
+    if not cfg.constraints:
+        return
+
+    _SENSE_LABEL = {"le": "max (<=)", "ge": "min (>=)", "eq": "eq (==)"}
+
+    cnames = []
+    lhs_vals = []
+    rhs_vals = []
+    gaps = []
+    colors = []
+    sense_labels = []
+
+    for c in cfg.constraints:
+        lhs = sum(c.coefficients.get(v, 0) * (result.variables.get(v) or 0) for v in result.variables)
+        rhs = c.rhs
+        slack = result.slacks.get(c.name, 0)
+        gap = abs(slack)
+        binding = abs(slack) < 1e-9
+
+        sense_labels.append(_SENSE_LABEL[c.sense])
+        cnames.append(c.name)
+        lhs_vals.append(lhs)
+        rhs_vals.append(rhs)
+        gaps.append(gap)
+        colors.append("#e74c3c" if binding else "#2ecc71")
+
+    fig, ax = plt.subplots(figsize=(max(7, len(cnames) * 1.5), 6))
+    y_pos = np.arange(len(cnames))
+    bar_height = 0.35
+
+    # LHS bars
+    bars_lhs = ax.barh(y_pos + bar_height / 2, lhs_vals, bar_height,
+                       label="LHS (actual)", color="steelblue", edgecolor="white")
+    # RHS bars
+    bars_rhs = ax.barh(y_pos - bar_height / 2, rhs_vals, bar_height,
+                       label="RHS (limit)", color="coral", edgecolor="white", alpha=0.7)
+
+    # Annotate gap and binding status
+    for i, (lhs, rhs, gap, color) in enumerate(zip(lhs_vals, rhs_vals, gaps, colors)):
+        max_val = max(lhs, rhs)
+        label = "binding" if abs(gap) < 1e-9 else f"gap={gap:.1f}"
+        ax.text(max_val + max(max_val * 0.03, 1), y_pos[i], label,
+                va="center", fontsize=9, color=color, fontweight="bold")
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([f"{n}  [{s}]" for n, s in zip(cnames, sense_labels)])
+    ax.set_xlabel("Value")
+    ax.set_title(f"{cfg.name} — Constraint Gap (LHS vs RHS)")
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+# ============================================================
 # 通用摘要图（向后兼容）
 # ============================================================
 

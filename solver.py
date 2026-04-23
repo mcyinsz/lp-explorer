@@ -13,6 +13,7 @@ from visualizer import (
     plot_resource_utilization,
     plot_objective_breakdown,
     plot_constraint_heatmap,
+    plot_constraint_gap,
 )
 
 
@@ -25,6 +26,7 @@ _VISUAL_FLAGS = [
     "visual_resource",
     "visual_objective",
     "visual_heatmap",
+    "visual_gap",
 ]
 _REPORT_FLAGS = [
     "report_solution",
@@ -54,19 +56,22 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
     # Parse variable terms from a string into {var: coefficient}
     def _extract_coeffs(s: str) -> tuple[dict[str, float], float]:
         coeffs: dict[str, float] = {}
+        consumed = s
         # Match terms like "2*x", "-x", "+3.5*x", "x", but not bare numbers like "10"
         for match in re.finditer(r"([+-]?\s*\d*\.?\d*)\s*\*\s*([A-Za-z_]\w*)", s):
             coef_str, var = match.group(1).replace(" ", ""), match.group(2)
             coef = float(coef_str) if coef_str and coef_str not in ("+", "-") else (1.0 if coef_str != "-" else -1.0)
             coeffs[var] = coeffs.get(var, 0) + coef
+            consumed = consumed.replace(match.group(0), "", 1)
         # Match bare variable names (no * and no coefficient), e.g. "A", "+ B", "- C"
         for match in re.finditer(r"(?:^|(?<=[-+\s]))([+-]?)\s*([A-Za-z_]\w*)(?!\s*\*|\d)", s):
             var = match.group(2)
             if var not in coeffs:
                 sign = match.group(1)
                 coeffs[var] = -1.0 if sign == "-" else 1.0
+                consumed = consumed.replace(match.group(0), "", 1)
         # Extract standalone constant (number not adjacent to a variable)
-        remaining = re.sub(r"[A-Za-z_]\w*", "", s)
+        remaining = re.sub(r"[A-Za-z_]\w*", "", consumed)
         const_match = re.search(r"[-+]?\s*\d+\.?\d*", remaining)
         const = float(const_match.group().replace(" ", "")) if const_match else 0.0
         return coeffs, const
@@ -368,6 +373,10 @@ def main():
                 out = tmp_dir / f"{stem}_heatmap.png"
                 plot_constraint_heatmap(solver.config, solver.result, str(out))
                 print(f"Constraint heatmap saved to {out}")
+            if args.visual_gap:
+                out = tmp_dir / f"{stem}_gap.png"
+                plot_constraint_gap(solver.config, solver.result, str(out))
+                print(f"Constraint gap plot saved to {out}")
 
     # Reports
     any_report = any(getattr(args, f) for f in _REPORT_FLAGS)
