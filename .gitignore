@@ -22,3 +22,7 @@ tmp/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI tools
+.claude/
+.codex
