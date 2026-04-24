@@ -37,8 +37,15 @@ def plot_2d_region(cfg: ProblemConfig, result: SolutionResult, output_path: str)
     yval = result.variables[yname] or 0
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    bound = max(abs(xval), abs(yval), 10) * 2
-    xs = np.linspace(0, bound, 500)
+
+    # Compute axis bounds from variable bounds and optimal point
+    x_lb = cfg.variables[xname].lb or 0
+    x_ub = cfg.variables[xname].ub
+    y_lb = cfg.variables[yname].lb or 0
+    y_ub = cfg.variables[yname].ub
+    bound_lo = min(x_lb, y_lb, 0) * 2
+    bound_hi = max(x_ub or 0, y_ub or 0, abs(xval), abs(yval), 10) * 2
+    xs = np.linspace(bound_lo, bound_hi, 500)
 
     for c in cfg.constraints:
         cx = c.coefficients.get(xname, 0)
@@ -51,12 +58,22 @@ def plot_2d_region(cfg: ProblemConfig, result: SolutionResult, output_path: str)
         label = f"{_expr_str(c)} {_sense_to_op(c.sense)} {c.rhs}"
         ax.plot(xs, ys, label=label)
 
-    y_min = np.full_like(xs, 0.0)
-    y_max = np.full_like(xs, bound, dtype=float)
+    y_min = np.full_like(xs, bound_lo)
+    y_max = np.full_like(xs, bound_hi, dtype=float)
     for c in cfg.constraints:
         cx = c.coefficients.get(xname, 0)
         cy = c.coefficients.get(yname, 0)
         if cy == 0:
+            # Vertical constraint: clip x range via y_min/y_max invalidation
+            xv = c.rhs / cx if cx != 0 else 0
+            if c.sense == "le":
+                mask = xs > xv
+            elif c.sense == "ge":
+                mask = xs < xv
+            else:
+                mask = xs != xv
+            y_min[mask] = bound_hi + 1
+            y_max[mask] = bound_lo - 1
             continue
         ys = (c.rhs - cx * xs) / cy
         if c.sense == "ge":
@@ -81,13 +98,13 @@ def plot_2d_region(cfg: ProblemConfig, result: SolutionResult, output_path: str)
     cx_obj = cfg.objective.coefficients.get(xname, 0)
     cy_obj = cfg.objective.coefficients.get(yname, 0)
     if cy_obj != 0:
-        for level in np.linspace(0, result.objective_value or bound, 5):
+        for level in np.linspace(0, result.objective_value or bound_hi, 5):
             ys_iso = (level - cx_obj * xs) / cy_obj
             ax.plot(xs, ys_iso, "k:", alpha=0.3, linewidth=0.8)
 
     ax.plot(xval, yval, "r*", markersize=15, label=f"optimal ({xval:.1f}, {yval:.1f})")
-    ax.set_xlim(0, bound)
-    ax.set_ylim(0, bound)
+    ax.set_xlim(bound_lo, bound_hi)
+    ax.set_ylim(bound_lo, bound_hi)
     ax.set_xlabel(xname)
     ax.set_ylabel(yname)
     ax.legend(fontsize=8)

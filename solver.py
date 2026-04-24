@@ -71,10 +71,11 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
             sign = match.group(1)
             coeffs[var] = coeffs.get(var, 0) + (-1.0 if sign == "-" else 1.0)
             consumed = consumed.replace(match.group(0), "", 1)
-        # Extract standalone constant (number not adjacent to a variable)
+        # Extract standalone constants (numbers not adjacent to a variable)
         remaining = re.sub(r"[A-Za-z_]\w*", "", consumed)
-        const_match = re.search(r"[-+]?\s*\d+\.?\d*", remaining)
-        const = float(const_match.group().replace(" ", "")) if const_match else 0.0
+        const = 0.0
+        for const_match in re.finditer(r"[-+]?\s*\d+\.?\d*", remaining):
+            const += float(const_match.group().replace(" ", ""))
         return coeffs, const
 
     left_coeffs, left_const = _extract_coeffs(left_str)
