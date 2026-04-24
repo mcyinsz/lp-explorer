@@ -8,7 +8,7 @@ A unified ILP (Integer Linear Programming) solver framework based on PuLP + CBC.
 - **Flexible constraint syntax** — use either human-readable expressions (`x + y >= 10`) or structured dicts
 - **Variable types** — continuous, integer, and binary
 - **Sensitivity analysis** — constraint slack, dual values (shadow prices), reduced costs
-- **5 visualization types** — feasible region, variable values, resource utilization, objective breakdown, constraint heatmap
+- **6 visualization types** — feasible region, variable values, resource utilization, objective breakdown, constraint heatmap, constraint gap
 - **4 YAML report types** — solution summary, variable detail, constraint detail, objective decomposition
 
 ## Quick Start
@@ -33,6 +33,7 @@ python solver.py examples/factory.yaml --visual-value
 python solver.py examples/factory.yaml --visual-resource
 python solver.py examples/factory.yaml --visual-objective
 python solver.py examples/factory.yaml --visual-heatmap
+python solver.py examples/factory.yaml --visual-gap
 python solver.py examples/production.yaml --visual-region
 
 # YAML reports
@@ -90,6 +91,15 @@ constraints:
 | `cat`    | `continuous`  | `continuous`, `integer`, or `binary` |
 
 When `cat: binary`, `lb=0` and `ub=1` are set automatically.
+
+### Validation and result semantics
+
+- Invalid config values are rejected before solving with a clear `ValueError`.
+- Problem `sense` must be `minimize` or `maximize`.
+- Constraint `sense` must be `le`, `ge`, or `eq`.
+- Every variable referenced by the objective or constraints must be declared in `variables`.
+- Reports are emitted as machine-readable YAML.
+- For non-optimal models such as `Infeasible` or `Unbounded`, fields that require a valid primal solution are serialized as `null`.
 
 ---
 
@@ -226,53 +236,67 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
 
 Converts `"2*x + y >= 10"` into `({"x": 2, "y": 1}, "ge", 10)`.
 
-**Step 1: Extract comparison operator and RHS**
+**Step 1: Extract the comparison operator and split both sides**
 
 ```python
-cmp_match = re.search(r"(>=|<=|==)\s*([-+]?\d*\.?\d+)\s*$", expr_str)
-op = cmp_match.group(1)         # ">="
-rhs = float(cmp_match.group(2)) # 10.0
-lhs = expr_str[:cmp_match.start()].strip()  # "2*x + y"
+cmp_match = re.search(r"(>=|<=|==)", expr_str)
+op = cmp_match.group(1)                            # ">="
+left_str = expr_str[: cmp_match.start()].strip()  # "2*x + y"
+right_str = expr_str[cmp_match.end() :].strip()   # "10"
 ```
 
-The regex anchors at end of string (`$`) to capture the final comparison.
+The parser first locates the comparison operator, then parses both sides separately.
 
-**Step 2: Extract coefficients and variables from LHS**
+**Step 2: Extract coefficients and constants from each side**
 
 ```python
-for match in re.finditer(r"([+-]?\s*\d*\.?\d*)\*?\s*(\w+)", lhs):
+for match in re.finditer(r"([+-]?\s*\d*\.?\d*)\s*\*\s*([A-Za-z_]\w*)", s):
     coef_str, var = match.group(1).replace(" ", ""), match.group(2)
 ```
 
-Matches each term, handling:
+This pass matches weighted terms such as:
 - `"2*x"` → coef=2, var=x
-- `"-x"` → coef=-1, var=x
 - `"+3.5*y"` → coef=3.5, var=y
-- `"x"` → coef=1, var=x
+
+Bare variables are handled in a second pass:
 
 ```python
-    if re.match(r"^[+-]?$", coef_str):
-        coef = 1.0 if coef_str in ("", "+") else -1.0  # Bare variable name → coefficient 1
-    else:
-        coef = float(coef_str)
-    coefficients[var] = coefficients.get(var, 0) + coef  # Accumulate same-variable coefficients
+for match in re.finditer(r"(?:^|(?<=[-+\s]))([+-]?)\s*([A-Za-z_]\w*)(?!\s*\*|\d)", s):
+    var = match.group(2)
+    sign = match.group(1)
+    coeffs[var] = coeffs.get(var, 0) + (-1.0 if sign == "-" else 1.0)
 ```
+
+Examples:
+- `"-x"` → coef=-1, var=x
+- `"x"` → coef=1, var=x
+- `"x + x"` → accumulated as coef=2
+
+```python
+    coef = float(coef_str) if coef_str and coef_str not in ("+", "-") else (1.0 if coef_str != "-" else -1.0)
+    coeffs[var] = coeffs.get(var, 0) + coef
+```
+
+Variables on the RHS are moved to the LHS with negated coefficients, and constants are merged into the final `rhs`.
 
 #### _parse_variable() — Variable parser
 
 ```python
 def _parse_variable(name: str, spec: dict) -> VariableSpec:
-    if spec.get("cat") == "binary":
+    cat = spec.get("cat", "continuous")
+    if cat not in _CAT_MAP:
+        raise ValueError(...)
+    if cat == "binary":
         return VariableSpec(name=name, lb=0, ub=1, cat="binary")  # Auto-set bounds for binary
     return VariableSpec(
         name=name,
         lb=spec.get("lb", 0),         # Default lower bound: 0
         ub=spec.get("ub"),            # Default upper bound: None (unbounded)
-        cat=spec.get("cat", "continuous"),
+        cat=cat,
     )
 ```
 
-Binary variables get special treatment — just write `{cat: binary}` in YAML without manually setting lb/ub.
+Binary variables get special treatment, and invalid categories are rejected immediately.
 
 #### _parse_constraint() — Constraint parser
 
@@ -285,6 +309,8 @@ def _parse_constraint(raw: dict, index: int) -> ConstraintSpec:
         coefficients = dict(raw["coefficients"])  # Structured syntax
         sense = raw["sense"]
         rhs = float(raw["rhs"])
+    if sense not in {"le", "ge", "eq"}:
+        raise ValueError(...)
     return ConstraintSpec(name=name, coefficients=coefficients, sense=sense, rhs=rhs)
 ```
 
@@ -297,22 +323,33 @@ def load_config(path: str) -> ProblemConfig:
     with open(path) as f:
         data = yaml.safe_load(f)                                  # Parse YAML → dict
 
+    sense = data.get("sense", "minimize")
+    if sense not in {"minimize", "maximize"}:
+        raise ValueError(...)
+
     variables = {name: _parse_variable(name, spec)
                  for name, spec in data["variables"].items()}     # Parse each variable
     objective = ObjectiveSpec(coefficients=data["objective"]["coefficients"])
     constraints = [_parse_constraint(c, i)
                    for i, c in enumerate(data.get("constraints", []))]
 
+    known_vars = set(variables)
+    if set(objective.coefficients) - known_vars:
+        raise ValueError(...)
+    for constraint in constraints:
+        if set(constraint.coefficients) - known_vars:
+            raise ValueError(...)
+
     return ProblemConfig(
         name=data["name"],
-        sense=data.get("sense", "minimize"),   # Default: minimize
+        sense=sense,
         variables=variables,
         objective=objective,
         constraints=constraints,
     )
 ```
 
-`yaml.safe_load` only parses standard YAML types — it won't execute arbitrary code, making it safer than `yaml.load`.
+`yaml.safe_load` only parses standard YAML types, and `load_config()` also validates enums and referenced variable names before the solver runs.
 
 #### ILPSolver class — Main solver
 
@@ -392,18 +429,20 @@ Each constraint builds a linear LHS expression, then forms `lhs <= rhs` based on
 - `v.dj` — reduced cost: how much the objective coefficient of a non-basic variable must improve before it enters the basis
 
 ```python
+        status_str = pulp.LpStatus[status]
+        has_solution = status_str == "Optimal"
         self.result = SolutionResult(
-            status=pulp.LpStatus[status],              # Numeric code → readable string
-            objective_value=pulp.value(prob.objective),
-            variables={name: v.varValue for name, v in self._vars.items()},
-            duals=duals,
-            slacks=slacks,
-            reduced_costs=reduced_costs,
+            status=status_str,                         # Numeric code → readable string
+            objective_value=pulp.value(prob.objective) if has_solution else None,
+            variables={name: (v.varValue if has_solution else None) for name, v in self._vars.items()},
+            duals=duals if has_solution else {},
+            slacks=slacks if has_solution else {},
+            reduced_costs=reduced_costs if has_solution else {},
         )
         return self.result
 ```
 
-`pulp.LpStatus` maps integer codes to strings (1→"Optimal", -1→"Infeasible", etc.).
+`pulp.LpStatus` maps integer codes to strings (1→"Optimal", -1→"Infeasible", etc.). Only `Optimal` results are exposed as primal and sensitivity values; other statuses become `null` in YAML reports.
 
 **print_result() — Display results**
 
@@ -566,7 +605,7 @@ python validate.py 2>/dev/null  # suppress CBC solver output
 lp-explorer/
 ├── models.py          # Data models (VariableSpec, ConstraintSpec, SolutionResult, etc.)
 ├── solver.py          # ILPSolver class: YAML parse → PuLP model → CBC solve → output
-├── visualizer.py      # 5 chart types + backward-compatible auto-detect
+├── visualizer.py      # 6 chart types + backward-compatible auto-detect
 ├── validate.py        # One-click validation runner for all examples
 ├── requirements.txt   # Python dependencies
 ├── examples/          # Example problem definitions
@@ -609,6 +648,7 @@ All outputs go to `tmp/` directory.
 | `--visual-resource`   | `*_resource.png`       | Resource utilization stacked bars + RHS limit |
 | `--visual-objective`  | `*_objective.png`      | Objective contribution pie chart             |
 | `--visual-heatmap`    | `*_heatmap.png`        | Constraint coefficient matrix heatmap        |
+| `--visual-gap`        | `*_gap.png`            | Constraint gap chart comparing LHS vs RHS    |
 
 ### Report Options
 
@@ -620,6 +660,8 @@ All reports output as YAML to `tmp/` directory.
 | `--report-variable`   | `*_variable.yaml`      | Value, reduced cost, bounds, type per variable |
 | `--report-constraint` | `*_constraint.yaml`    | LHS, RHS, slack, dual, binding flag per constraint |
 | `--report-objective`  | `*_objective.yaml`     | Per-variable contribution (value × coefficient) and percentage |
+
+For `Infeasible` and `Unbounded` models, report fields that require a valid primal solution are serialized as `null`.
 
 ### Report YAML Examples
 
@@ -666,3 +708,14 @@ contributions:
     contribution: 16000.0
     percentage: 50.7
 ```
+
+Non-optimal example (`examples/infeasible.yaml`):
+
+```yaml
+status: Infeasible
+objective: null
+variables:
+  x: null
+```
+
+Fields that depend on a valid primal solution remain `null` until the model is solved to `Optimal`.

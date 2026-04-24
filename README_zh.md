@@ -8,7 +8,7 @@
 - **灵活的约束语法** — 支持可读表达式（`x + y >= 10`）和结构化字典两种写法
 - **多种变量类型** — 连续变量、整数变量、0-1 变量
 - **灵敏度分析** — 约束松弛量、影子价格（dual）、检验数（reduced cost）
-- **5 种可视化图表** — 可行域、变量取值、资源利用率、目标贡献占比、约束矩阵热力图
+- **6 种可视化图表** — 可行域、变量取值、资源利用率、目标贡献占比、约束矩阵热力图、约束间隙图
 - **4 种 YAML 报告** — 求解摘要、变量详情、约束详情、目标分解
 
 ## 快速开始
@@ -33,6 +33,7 @@ python solver.py examples/factory.yaml --visual-value
 python solver.py examples/factory.yaml --visual-resource
 python solver.py examples/factory.yaml --visual-objective
 python solver.py examples/factory.yaml --visual-heatmap
+python solver.py examples/factory.yaml --visual-gap
 python solver.py examples/production.yaml --visual-region
 
 # YAML 数据报告
@@ -90,6 +91,15 @@ constraints:
 | `cat`  | `continuous` | `continuous`、`integer` 或 `binary` |
 
 `cat: binary` 时自动设置 `lb=0, ub=1`。
+
+### 配置校验与结果语义
+
+- 非法配置会在求解前直接抛出清晰的 `ValueError`。
+- 问题 `sense` 只能是 `minimize` 或 `maximize`。
+- 约束 `sense` 只能是 `le`、`ge` 或 `eq`。
+- 目标函数和约束里引用的变量必须先在 `variables` 中声明。
+- 所有报告都以机器可读的 YAML 输出。
+- 对 `Infeasible`、`Unbounded` 等非最优状态，依赖有效原始解的字段会序列化为 `null`。
 
 ---
 
@@ -226,53 +236,67 @@ def _parse_expression(expr_str: str) -> tuple[dict[str, float], str, float]:
 
 将 `"2*x + y >= 10"` 这样的字符串解析为 `({"x": 2, "y": 1}, "ge", 10)`。
 
-**第一步：提取比较运算符和右端项**
+**第一步：定位比较运算符，并拆分左右两边**
 
 ```python
-cmp_match = re.search(r"(>=|<=|==)\s*([-+]?\d*\.?\d+)\s*$", expr_str)
-op = cmp_match.group(1)    # ">="
-rhs = float(cmp_match.group(2))  # 10.0
-lhs = expr_str[:cmp_match.start()].strip()  # "2*x + y"
+cmp_match = re.search(r"(>=|<=|==)", expr_str)
+op = cmp_match.group(1)                           # ">="
+left_str = expr_str[: cmp_match.start()].strip() # "2*x + y"
+right_str = expr_str[cmp_match.end() :].strip()  # "10"
 ```
 
-正则从字符串末尾（`$`）开始匹配，确保捕获的是最后的比较运算。
+解析器先找到比较运算符，再分别解析左右两边。
 
-**第二步：提取左端项的系数和变量**
+**第二步：分别提取左右两边的系数与常数**
 
 ```python
-for match in re.finditer(r"([+-]?\s*\d*\.?\d*)\*?\s*(\w+)", lhs):
+for match in re.finditer(r"([+-]?\s*\d*\.?\d*)\s*\*\s*([A-Za-z_]\w*)", s):
     coef_str, var = match.group(1).replace(" ", ""), match.group(2)
 ```
 
-逐项匹配，能处理：
+第一轮匹配带显式系数的项，例如：
 - `"2*x"` → coef=2, var=x
-- `"-x"` → coef=-1, var=x
 - `"+3.5*y"` → coef=3.5, var=y
-- `"x"` → coef=1, var=x
+
+裸变量会在第二轮单独处理：
 
 ```python
-    if re.match(r"^[+-]?$", coef_str):
-        coef = 1.0 if coef_str in ("", "+") else -1.0  # 裸变量名默认系数为 1
-    else:
-        coef = float(coef_str)
-    coefficients[var] = coefficients.get(var, 0) + coef  # 同名变量系数累加
+for match in re.finditer(r"(?:^|(?<=[-+\s]))([+-]?)\s*([A-Za-z_]\w*)(?!\s*\*|\d)", s):
+    var = match.group(2)
+    sign = match.group(1)
+    coeffs[var] = coeffs.get(var, 0) + (-1.0 if sign == "-" else 1.0)
 ```
+
+例如：
+- `"-x"` → coef=-1, var=x
+- `"x"` → coef=1, var=x
+- `"x + x"` → 累加后 coef=2
+
+```python
+    coef = float(coef_str) if coef_str and coef_str not in ("+", "-") else (1.0 if coef_str != "-" else -1.0)
+    coeffs[var] = coeffs.get(var, 0) + coef
+```
+
+如果变量出现在右边，它会被移到左边并取相反数；常数项会并入最终的 `rhs`。
 
 #### _parse_variable() — 变量解析
 
 ```python
 def _parse_variable(name: str, spec: dict) -> VariableSpec:
-    if spec.get("cat") == "binary":
+    cat = spec.get("cat", "continuous")
+    if cat not in _CAT_MAP:
+        raise ValueError(...)
+    if cat == "binary":
         return VariableSpec(name=name, lb=0, ub=1, cat="binary")  # binary 自动设界
     return VariableSpec(
         name=name,
         lb=spec.get("lb", 0),         # 默认下界 0
         ub=spec.get("ub"),            # 默认无上界
-        cat=spec.get("cat", "continuous"),
+        cat=cat,
     )
 ```
 
-对 binary 变量做了特殊处理——YAML 中只需写 `{cat: binary}`，不用手动设 lb/ub。
+对 binary 变量做了特殊处理，同时会提前拒绝非法变量类型。
 
 #### _parse_constraint() — 约束解析
 
@@ -285,6 +309,8 @@ def _parse_constraint(raw: dict, index: int) -> ConstraintSpec:
         coefficients = dict(raw["coefficients"])  # 结构化写法
         sense = raw["sense"]
         rhs = float(raw["rhs"])
+    if sense not in {"le", "ge", "eq"}:
+        raise ValueError(...)
     return ConstraintSpec(name=name, coefficients=coefficients, sense=sense, rhs=rhs)
 ```
 
@@ -297,22 +323,33 @@ def load_config(path: str) -> ProblemConfig:
     with open(path) as f:
         data = yaml.safe_load(f)                                  # 解析 YAML 为 dict
 
+    sense = data.get("sense", "minimize")
+    if sense not in {"minimize", "maximize"}:
+        raise ValueError(...)
+
     variables = {name: _parse_variable(name, spec)
                  for name, spec in data["variables"].items()}     # 逐个解析变量
     objective = ObjectiveSpec(coefficients=data["objective"]["coefficients"])
     constraints = [_parse_constraint(c, i)
                    for i, c in enumerate(data.get("constraints", []))]
 
+    known_vars = set(variables)
+    if set(objective.coefficients) - known_vars:
+        raise ValueError(...)
+    for constraint in constraints:
+        if set(constraint.coefficients) - known_vars:
+            raise ValueError(...)
+
     return ProblemConfig(
         name=data["name"],
-        sense=data.get("sense", "minimize"),   # 默认最小化
+        sense=sense,
         variables=variables,
         objective=objective,
         constraints=constraints,
     )
 ```
 
-`yaml.safe_load` 只解析标准 YAML 类型，不会执行任意代码，比 `yaml.load` 更安全。
+`yaml.safe_load` 只解析标准 YAML 类型，而且 `load_config()` 还会在求解前检查枚举值和变量引用是否合法。
 
 #### ILPSolver 类 — 求解器主体
 
@@ -392,18 +429,20 @@ class ILPSolver:
 - `v.dj` — 检验数（reduced cost），表示非基变量的目标系数需要改善多少才能入基
 
 ```python
+        status_str = pulp.LpStatus[status]
+        has_solution = status_str == "Optimal"
         self.result = SolutionResult(
-            status=pulp.LpStatus[status],              # 数字状态码 → 可读字符串
-            objective_value=pulp.value(prob.objective), # 最优目标值
-            variables={name: v.varValue for name, v in self._vars.items()},
-            duals=duals,
-            slacks=slacks,
-            reduced_costs=reduced_costs,
+            status=status_str,                         # 数字状态码 → 可读字符串
+            objective_value=pulp.value(prob.objective) if has_solution else None,
+            variables={name: (v.varValue if has_solution else None) for name, v in self._vars.items()},
+            duals=duals if has_solution else {},
+            slacks=slacks if has_solution else {},
+            reduced_costs=reduced_costs if has_solution else {},
         )
         return self.result
 ```
 
-`pulp.LpStatus` 把整数状态码映射为字符串（1→"Optimal", -1→"Infeasible" 等）。
+`pulp.LpStatus` 把整数状态码映射为字符串（1→"Optimal", -1→"Infeasible" 等）。只有 `Optimal` 状态才暴露原始解和灵敏度字段；其他状态在 YAML 报告中会写成 `null`。
 
 **print_result() — 打印结果**
 
@@ -566,7 +605,7 @@ python validate.py 2>/dev/null  # 静默 CBC 求解器输出
 lp-explorer/
 ├── models.py          # 数据模型（VariableSpec, ConstraintSpec, SolutionResult 等）
 ├── solver.py          # ILPSolver 类：YAML 解析 → PuLP 建模 → CBC 求解 → 结果输出
-├── visualizer.py      # 5 种图表 + 向后兼容的自动检测
+├── visualizer.py      # 6 种图表 + 向后兼容的自动检测
 ├── validate.py        # 一键验证脚本，校验全部示例与已知最优解
 ├── requirements.txt   # Python 依赖
 ├── examples/          # 示例问题定义
@@ -610,6 +649,7 @@ python solver.py <config.yaml> [选项]
 | `--visual-resource`  | `*_resource.png`     | 资源利用率堆叠柱状图 + RHS 上限线        |
 | `--visual-objective` | `*_objective.png`    | 目标贡献占比饼图                         |
 | `--visual-heatmap`   | `*_heatmap.png`      | 约束系数矩阵热力图                       |
+| `--visual-gap`       | `*_gap.png`          | 约束间隙图，对比每条约束的 LHS 与 RHS    |
 
 ### 报告选项
 
@@ -621,6 +661,8 @@ python solver.py <config.yaml> [选项]
 | `--report-variable`   | `*_variable.yaml`    | 变量值、检验数、上下界、类型               |
 | `--report-constraint` | `*_constraint.yaml`  | 约束 LHS、RHS、slack、dual、是否 binding  |
 | `--report-objective`  | `*_objective.yaml`   | 各变量贡献（值 × 系数）及百分比            |
+
+对于 `Infeasible` 和 `Unbounded` 等非最优模型，依赖有效原始解的报告字段会序列化为 `null`。
 
 ### YAML 报告示例
 
@@ -667,3 +709,14 @@ contributions:
     contribution: 16000.0
     percentage: 50.7
 ```
+
+非最优状态示例（`examples/infeasible.yaml`）：
+
+```yaml
+status: Infeasible
+objective: null
+variables:
+  x: null
+```
+
+凡是依赖有效原始解的字段，都会在模型达到 `Optimal` 之前保持为 `null`。
